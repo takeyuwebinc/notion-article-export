@@ -142,6 +142,8 @@ const ASSET_KEY_LEN = 16;
 const DOWNLOAD_CONCURRENCY = 3;
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 const ASSET_FILE_TYPES = new Set(["image", "video", "pdf", "file"]);
+const ASSET_URL_REFRESH_STATUS = 403;
+const ASSET_URL_EXPIRED_MARKER = "Request has expired";
 
 const getInternalFileUrl = (fileValue) => {
   if (!isNotionInternalFile(fileValue)) return null;
@@ -600,7 +602,14 @@ const renderPage = (node, converter, pageAssets) => {
   return `---\n${fmStr}---\n\n${body}\n`;
 };
 
-const registerAsset = ({ pageId, url, blockId, pageAssets, allAssets }) => {
+const registerAsset = ({
+  pageId,
+  url,
+  blockId,
+  source,
+  pageAssets,
+  allAssets,
+}) => {
   const urlPath = extractUrlPath(url);
   if (pageAssets.has(urlPath)) return;
   const record = {
@@ -609,6 +618,9 @@ const registerAsset = ({ pageId, url, blockId, pageAssets, allAssets }) => {
     urlPath,
     signedUrl: url,
     blockId,
+    sourceKind: source.kind,
+    sourceBlockId: source.kind === "block" ? source.blockId : null,
+    sourcePageId: source.kind === "page" ? source.pageId : null,
     filename: null,
     localRelPath: null,
     downloaded: false,
@@ -626,6 +638,7 @@ const collectAssetsFromBlocks = (blocks, pageId, pageAssets, allAssets) => {
           pageId,
           url,
           blockId: stripHyphens(block.id || ""),
+          source: { kind: "block", blockId: block.id },
           pageAssets,
           allAssets,
         });
@@ -643,7 +656,14 @@ const collectAssetsFromProperties = (properties, pageId, pageAssets, allAssets) 
     for (const f of prop.files || []) {
       const url = getInternalFileUrl(f);
       if (!url) continue;
-      registerAsset({ pageId, url, blockId: pageId, pageAssets, allAssets });
+      registerAsset({
+        pageId,
+        url,
+        blockId: pageId,
+        source: { kind: "page", pageId: addHyphens(pageId) },
+        pageAssets,
+        allAssets,
+      });
     }
   }
 };
@@ -666,10 +686,15 @@ const collectAssets = (state) => {
 };
 
 const assignAssetLocalPaths = (state, pageAssetsByPageId) => {
+  let hasFailure = false;
   for (const [pageId, pageAssets] of pageAssetsByPageId) {
     if (pageAssets.size === 0) continue;
     const node = state.visited.get(pageId);
-    if (!node?.outRelPath) continue;
+    if (!node?.outRelPath) {
+      hasFailure = true;
+      process.stderr.write(`[warn] page has assets but no output path: ${pageId}\n`);
+      continue;
+    }
     const mdRelPath = node.outRelPath.split(path.sep).join("/");
     const assetDir = mdRelPath.replace(/\.md$/, "");
     const used = new Set();
@@ -686,18 +711,87 @@ const assignAssetLocalPaths = (state, pageAssetsByPageId) => {
       asset.localRelPath = `${assetDir}/${filename}`;
     }
   }
+  return { hasFailure };
 };
 
-const downloadAsset = async (asset, outDir) => {
-  const fullPath = path.join(outDir, asset.localRelPath.split("/").join(path.sep));
-  await fs.mkdir(path.dirname(fullPath), { recursive: true });
-  const res = await fetch(asset.signedUrl, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+const refreshAssetUrl = async (client, asset) => {
+  if (asset.sourceKind === "block" && asset.sourceBlockId) {
+    const block = await withRateLimitRetry(() =>
+      client.blocks.retrieve({ block_id: asset.sourceBlockId }),
+    );
+    if (!ASSET_FILE_TYPES.has(block.type)) {
+      throw new Error(`unexpected block type: ${block.type}`);
+    }
+    const url = getInternalFileUrl(block[block.type]);
+    if (!url) throw new Error("refreshed block has no internal file url");
+    asset.signedUrl = url;
+    return;
+  }
+  if (asset.sourceKind === "page" && asset.sourcePageId) {
+    const page = await withRateLimitRetry(() =>
+      client.pages.retrieve({ page_id: asset.sourcePageId }),
+    );
+    for (const prop of Object.values(page.properties || {})) {
+      if (prop?.type !== "files") continue;
+      for (const f of prop.files || []) {
+        const url = getInternalFileUrl(f);
+        if (!url) continue;
+        if (extractUrlPath(url) === asset.urlPath) {
+          asset.signedUrl = url;
+          return;
+        }
+      }
+    }
+    throw new Error("refreshed page has no matching file url");
+  }
+  throw new Error("asset has no refresh source");
+};
+
+const tryFetchAsset = async (url) => {
+  const res = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+  let expired = false;
+  if (res.status === ASSET_URL_REFRESH_STATUS) {
+    const body = await res.text().catch(() => "");
+    expired = body.includes(ASSET_URL_EXPIRED_MARKER);
+  }
+  return { res, expired };
+};
+
+const writeAssetResponse = async (res, fullPath) => {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   if (!res.body) throw new Error("empty response body");
   await pipeline(res.body, createWriteStream(fullPath));
 };
 
-const downloadAssets = async (assets, outDir) => {
+const wrapAfterRefreshError = (err) => {
+  const wrapped = err instanceof Error ? err : new Error(String(err));
+  wrapped.afterRefresh = true;
+  return wrapped;
+};
+
+const downloadAsset = async (client, asset, outDir) => {
+  const fullPath = path.join(outDir, asset.localRelPath.split("/").join(path.sep));
+  await fs.mkdir(path.dirname(fullPath), { recursive: true });
+
+  const first = await tryFetchAsset(asset.signedUrl);
+  if (first.res.ok) {
+    await writeAssetResponse(first.res, fullPath);
+    return;
+  }
+  if (!first.expired) {
+    throw new Error(`HTTP ${first.res.status}`);
+  }
+
+  try {
+    await refreshAssetUrl(client, asset);
+    const second = await tryFetchAsset(asset.signedUrl);
+    await writeAssetResponse(second.res, fullPath);
+  } catch (err) {
+    throw wrapAfterRefreshError(err);
+  }
+};
+
+const downloadAssets = async (client, assets, outDir) => {
   const total = assets.length;
   if (total === 0) return { hasFailure: false };
   let nextIndex = 0;
@@ -708,8 +802,15 @@ const downloadAssets = async (assets, outDir) => {
       const i = nextIndex++;
       if (i >= total) return;
       const asset = assets[i];
+      if (!asset.localRelPath) {
+        hasFailure = true;
+        process.stderr.write(`[warn] asset skipped (no local path): ${asset.blockId}\n`);
+        completed += 1;
+        process.stderr.write(`[asset ${completed}/${total}] (skipped)\n`);
+        continue;
+      }
       try {
-        await downloadAsset(asset, outDir);
+        await downloadAsset(client, asset, outDir);
         asset.downloaded = true;
       } catch (err) {
         hasFailure = true;
@@ -717,8 +818,11 @@ const downloadAssets = async (assets, outDir) => {
           err?.name === "TimeoutError" || err?.name === "AbortError"
             ? "timeout"
             : err?.message || String(err);
+        const tag = err?.afterRefresh
+          ? "asset download failed after url refresh"
+          : "asset download failed";
         process.stderr.write(
-          `[warn] asset download failed: ${asset.blockId} ${asset.signedUrl}: ${reason}\n`,
+          `[warn] ${tag}: ${asset.blockId} ${asset.signedUrl}: ${reason}\n`,
         );
       } finally {
         completed += 1;
@@ -804,11 +908,12 @@ const main = async () => {
   assignPaths(rootNode, "");
 
   const { pageAssetsByPageId, allAssets } = collectAssets(state);
-  assignAssetLocalPaths(state, pageAssetsByPageId);
+  const { hasFailure: pathFailure } = assignAssetLocalPaths(state, pageAssetsByPageId);
+  if (pathFailure) state.hasFailure = true;
 
   const assetsByKey = new Map(allAssets.map((a) => [a.assetKey, a]));
 
-  const { hasFailure: dlFailure } = await downloadAssets(allAssets, outDir);
+  const { hasFailure: dlFailure } = await downloadAssets(client, allAssets, outDir);
   if (dlFailure) state.hasFailure = true;
 
   const rtFormatter = new MentionHrefRewriter();
