@@ -487,7 +487,10 @@ const crawl = async (client, idInput, state, opts = {}) => {
     for (const page of pages) {
       try {
         const child = await crawl(client, page.id, state, { kind: "db_page" });
-        node.children.push(child);
+        if (!state.parentOf.has(child.id)) {
+          state.parentOf.set(child.id, node.id);
+          node.children.push(child);
+        }
       } catch (err) {
         state.hasFailure = true;
         process.stderr.write(`[warn] fetch failed: ${stripHyphens(page.id)}: ${err.message}\n`);
@@ -555,6 +558,7 @@ const crawl = async (client, idInput, state, opts = {}) => {
 };
 
 const assignPaths = (node, parentRelDir) => {
+  if (node.outRelPath) return;
   const shortId = node.id.slice(0, SHORT_ID_LEN);
   const slug = dirSlug(node.title, shortId);
   const mdPath = parentRelDir ? `${parentRelDir}/${slug}.md` : `${slug}.md`;
@@ -789,6 +793,8 @@ const main = async () => {
 
   let rootNode;
   try {
+    const rootId = extractPageId(pageIdInput);
+    state.parentOf.set(rootId, null);
     rootNode = await crawl(client, pageIdInput, state, { kind: "page" });
   } catch (err) {
     process.stderr.write(`[error] root page fetch failed: ${err.message}\n`);
