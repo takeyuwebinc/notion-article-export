@@ -38,21 +38,22 @@ npm start -- cadb799680ff4dea9016854d930d845e ./out
 
 ## 生成される構造
 
-各ページは個別のディレクトリに配置され、本文は `index.md` として出力される。
-ディレクトリ名は `<サニタイズ済みタイトル>-<pageId 先頭 8 文字>` の形式。
+各ページは個別のディレクトリに配置され、本文はディレクトリ名と同じ slug を持つ
+`<slug>.md` として出力される。ディレクトリ名・ファイル名の slug は
+`<サニタイズ済みタイトル>-<pageId 先頭 8 文字>` の形式。
 
 ```
 out/
 └── <root>/
-    ├── index.md
+    ├── <root>.md
     ├── <child_page>/
-    │   └── index.md
+    │   └── <child_page>.md
     └── <child_database>/
-        ├── index.md
+        ├── <child_database>.md
         ├── <db_page_1>/
-        │   └── index.md
+        │   └── <db_page_1>.md
         └── <db_page_2>/
-            └── index.md
+            └── <db_page_2>.md
 ```
 
 - タイトル中の OS 非互換文字（`/ \ : * ? " < > |` および制御文字）は `_` に置換される
@@ -62,7 +63,7 @@ out/
 
 ## YAML frontmatter
 
-各 `index.md` 冒頭に以下の共通項目が付与される:
+各ページの `<slug>.md` 冒頭に以下の共通項目が付与される:
 
 - `id`（ハイフン付き Notion ID）
 - `title`
@@ -91,27 +92,29 @@ out/
 
 `image` / `video` / `pdf` / `file` ブロックおよびデータベースの `files` プロパティのうち、
 Notion 内部ファイル（`file` 型、署名付き S3 URL）はクロール後に自動でダウンロードされ、
-該当ページのディレクトリ配下 `assets/` に保存される。Markdown / frontmatter の参照は
-ローカルファイルへの相対パスに書き換えられる。
+該当ページのディレクトリ（本文 `<slug>.md` と同階層）に保存される。
+Markdown / frontmatter の参照はローカルファイルへの相対パスに書き換えられる。
 
 ```
 out/
 └── <page>/
-    ├── index.md
-    └── assets/
-        ├── image1.png
-        └── document.pdf
+    ├── <page>.md
+    ├── image1.png
+    └── document.pdf
 ```
 
 - Notion の署名付き URL は約 1 時間で失効するため、ダウンロードによりオフライン・長期保存可能な成果物になる
 - `external` 型（外部 URL）、`bookmark` / `embed` / `link_preview` ブロックは対象外で、従来通り URL がそのまま残る
 - 同一内部ファイルが複数ページから参照される場合は、参照元ページごとに重複して保存される
 - ファイル名は URL 末尾セグメントをデコード・サニタイズし、UTF-8 で 240 バイト以内に切り詰める
-- 同一ページ内で名前衝突した場合は `<basename>-<blockId 先頭 8 文字><ext>` 形式で解決
+- 名前衝突時は `<basename>-<blockId 先頭 8 文字><ext>` 形式で解決する。衝突対象は以下:
+  - 同一ページ内の他の添付ファイル名
+  - 本体 MD のファイル名（`<slug>.md`）
+  - 当該ページの子ノードの slug ディレクトリ名
 - 末尾セグメントが空または拡張子のみの場合は `<blockId 先頭 8 文字>.bin` にフォールバック
 - ダウンロード並列度は 3、個別のタイムアウトは 60 秒、再試行はなし
 - 個別ダウンロード失敗時は、該当参照のみ元の Notion 署名付き URL のまま残り、処理は継続される（終了コードは 2）
-- 再実行時、既存の `assets/` 配下ファイルは上書きされる
+- 再実行時、既存の添付ファイルは上書きされる
 
 出力される添付ファイルは容量が大きくなるため、`out/` ディレクトリは `.gitignore` に追加しておくことを推奨する。
 
@@ -119,7 +122,7 @@ out/
 
 本文中の `child_page` / `child_database` / `link_to_page` ブロック、および
 rich_text 中のページ／データベース mention は、出力後のファイル間の相対パスに
-書き換えられる（例: `./sub/index.md`、`../db/page-a1b2c3d4/index.md`）。
+書き換えられる（例: `./sub-a1b2c3d4/sub-a1b2c3d4.md`、`../db-e5f6g7h8/db-e5f6g7h8.md`）。
 
 クロール対象外のページへの参照は `https://www.notion.so/<id>` に置換され、
 stderr に `[warn] unresolved page link: <url>` が出力される（同一 ID につき 1 回）。

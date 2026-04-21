@@ -558,7 +558,8 @@ const assignPaths = (node, parentRelDir) => {
   const shortId = node.id.slice(0, SHORT_ID_LEN);
   const slug = dirSlug(node.title, shortId);
   const relDir = parentRelDir ? `${parentRelDir}/${slug}` : slug;
-  node.outRelPath = `${relDir}/index.md`;
+  node.slug = slug;
+  node.outRelPath = `${relDir}/${slug}.md`;
   for (const child of node.children) {
     assignPaths(child, relDir);
   }
@@ -666,12 +667,16 @@ const assignAssetLocalPaths = (state, pageAssetsByPageId) => {
     if (!node?.outRelPath) continue;
     const pageRelDir = path.posix.dirname(node.outRelPath.split(path.sep).join("/"));
     const used = new Set();
+    used.add(`${node.slug}.md`);
+    for (const child of node.children) {
+      if (child.slug) used.add(child.slug);
+    }
     for (const asset of pageAssets.values()) {
       const base = sanitizeAssetFilename(asset.urlPath, asset.blockId);
       const filename = resolveAssetFilenameCollision(base, asset.blockId, used);
       used.add(filename);
       asset.filename = filename;
-      asset.localRelPath = `${pageRelDir}/assets/${filename}`;
+      asset.localRelPath = `${pageRelDir}/${filename}`;
     }
   }
 };
