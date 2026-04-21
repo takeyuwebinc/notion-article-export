@@ -5,7 +5,6 @@ import { pipeline } from "node:stream/promises";
 import { createHash } from "node:crypto";
 import yaml from "js-yaml";
 import {
-  $getDatabasePages,
   $getPageFullContent,
   BasicRichTextFormatter,
   NotionMarkdownConverter,
@@ -63,6 +62,46 @@ const extractPageTitle = (pageMeta) => {
 const extractDbTitle = (dbMeta) => {
   const text = (dbMeta.title || []).map((t) => t.plain_text).join("");
   return text || "untitled";
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withRateLimitRetry = async (fn) => {
+  const maxAttempts = 3;
+  let lastErr;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (err?.code !== "rate_limited") throw err;
+      if (attempt === maxAttempts - 1) break;
+      await sleep(500 * 2 ** attempt);
+    }
+  }
+  throw lastErr;
+};
+
+const fetchDatabasePages = async (client, databaseId) => {
+  const dbMeta = await withRateLimitRetry(() =>
+    client.databases.retrieve({ database_id: databaseId })
+  );
+  const dataSources = dbMeta.data_sources || [];
+  const pages = [];
+  for (const ds of dataSources) {
+    let cursor;
+    do {
+      const res = await withRateLimitRetry(() =>
+        client.dataSources.query({
+          data_source_id: ds.id,
+          start_cursor: cursor,
+        })
+      );
+      pages.push(...res.results);
+      cursor = res.has_more ? res.next_cursor : undefined;
+    } while (cursor);
+  }
+  return pages;
 };
 
 const sanitizeTitle = (title) => {
@@ -439,7 +478,7 @@ const crawl = async (client, idInput, state, opts = {}) => {
 
     let pages;
     try {
-      pages = await $getDatabasePages(client, id);
+      pages = await fetchDatabasePages(client, id);
     } catch (err) {
       state.hasFailure = true;
       process.stderr.write(`[warn] fetch failed: ${id}: ${err.message}\n`);
