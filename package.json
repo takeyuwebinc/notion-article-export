@@ -1,0 +1,17 @@
+{
+  "name": "article-export",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --env-file=.env main.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@notion-md-converter/core": "^0.12.1",
+    "@notionhq/client": "^5.20.0"
+  }
+}
