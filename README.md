@@ -38,23 +38,22 @@ npm start -- cadb799680ff4dea9016854d930d845e ./out
 
 ## 生成される構造
 
-各ページは個別のディレクトリに配置され、本文はディレクトリ名と同じ slug を持つ
-`<slug>.md` として出力される。ディレクトリ名・ファイル名の slug は
-`<サニタイズ済みタイトル>-<pageId 先頭 8 文字>` の形式。
+各ページは単独ファイル `<slug>.md` として出力される。添付ファイルや子ページを持つ場合は、
+本体 MD と同名のサイドカーディレクトリ `<slug>/` が作成され、その配下に添付と子ページが
+配置される。slug は `<サニタイズ済みタイトル>-<pageId 先頭 8 文字>` の形式。
 
 ```
 out/
+├── <root>.md
 └── <root>/
-    ├── <root>.md
-    ├── <child_page>/
-    │   └── <child_page>.md
+    ├── <child_page>.md
+    ├── <child_database>.md
     └── <child_database>/
-        ├── <child_database>.md
-        ├── <db_page_1>/
-        │   └── <db_page_1>.md
-        └── <db_page_2>/
-            └── <db_page_2>.md
+        ├── <db_page_1>.md
+        └── <db_page_2>.md
 ```
+
+添付も子ページも持たない葉ページでは、サイドカーディレクトリは作成されない。
 
 - タイトル中の OS 非互換文字（`/ \ : * ? " < > |` および制御文字）は `_` に置換される
 - タイトル空の場合は `untitled-<shortId>`
@@ -92,13 +91,13 @@ out/
 
 `image` / `video` / `pdf` / `file` ブロックおよびデータベースの `files` プロパティのうち、
 Notion 内部ファイル（`file` 型、署名付き S3 URL）はクロール後に自動でダウンロードされ、
-該当ページのディレクトリ（本文 `<slug>.md` と同階層）に保存される。
+該当ページのサイドカーディレクトリ（本体 `<slug>.md` と同名の `<slug>/` 配下）に保存される。
 Markdown / frontmatter の参照はローカルファイルへの相対パスに書き換えられる。
 
 ```
 out/
+├── <page>.md
 └── <page>/
-    ├── <page>.md
     ├── image1.png
     └── document.pdf
 ```
@@ -109,8 +108,8 @@ out/
 - ファイル名は URL 末尾セグメントをデコード・サニタイズし、UTF-8 で 240 バイト以内に切り詰める
 - 名前衝突時は `<basename>-<blockId 先頭 8 文字><ext>` 形式で解決する。衝突対象は以下:
   - 同一ページ内の他の添付ファイル名
-  - 本体 MD のファイル名（`<slug>.md`）
-  - 当該ページの子ノードの slug ディレクトリ名
+  - 当該ページの子ノードの MD ファイル名（`<child-slug>.md`）
+  - 当該ページの子ノードのサイドカーディレクトリ名（`<child-slug>`）
 - 末尾セグメントが空または拡張子のみの場合は `<blockId 先頭 8 文字>.bin` にフォールバック
 - ダウンロード並列度は 3、個別のタイムアウトは 60 秒、再試行はなし
 - 個別ダウンロード失敗時は、該当参照のみ元の Notion 署名付き URL のまま残り、処理は継続される（終了コードは 2）
@@ -122,7 +121,8 @@ out/
 
 本文中の `child_page` / `child_database` / `link_to_page` ブロック、および
 rich_text 中のページ／データベース mention は、出力後のファイル間の相対パスに
-書き換えられる（例: `./sub-a1b2c3d4/sub-a1b2c3d4.md`、`../db-e5f6g7h8/db-e5f6g7h8.md`）。
+書き換えられる（例: 親から子 `./<parent-slug>/<child-slug>.md`、子から親 `../<parent-slug>.md`、
+兄弟ページ間 `./<sibling-slug>.md`）。
 
 クロール対象外のページへの参照は `https://www.notion.so/<id>` に置換され、
 stderr に `[warn] unresolved page link: <url>` が出力される（同一 ID につき 1 回）。
