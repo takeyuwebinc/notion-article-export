@@ -488,9 +488,14 @@ const crawl = async (client, idInput, state, opts = {}) => {
     }
     for (const page of pages) {
       try {
+        const childId = extractPageId(page.id);
+        let claimedByUs = false;
+        if (!state.parentOf.has(childId)) {
+          state.parentOf.set(childId, node.id);
+          claimedByUs = true;
+        }
         const child = await crawl(client, page.id, state, { kind: "db_page" });
-        if (!state.parentOf.has(child.id)) {
-          state.parentOf.set(child.id, node.id);
+        if (claimedByUs) {
           node.children.push(child);
         }
       } catch (err) {
@@ -525,28 +530,48 @@ const crawl = async (client, idInput, state, opts = {}) => {
   for (const ref of refs) {
     try {
       if (ref.kind === "child_page") {
+        const childId = extractPageId(ref.id);
+        let claimedByUs = false;
+        if (!state.parentOf.has(childId)) {
+          state.parentOf.set(childId, node.id);
+          claimedByUs = true;
+        }
         const child = await crawl(client, ref.id, state, { kind: "page" });
-        if (!state.parentOf.has(child.id)) {
-          state.parentOf.set(child.id, node.id);
+        if (claimedByUs) {
           node.children.push(child);
         }
       } else if (ref.kind === "link_page") {
+        const childId = extractPageId(ref.id);
+        let claimedByUs = false;
+        if (!state.parentOf.has(childId)) {
+          state.parentOf.set(childId, node.id);
+          claimedByUs = true;
+        }
         const child = await crawl(client, ref.id, state, { kind: "page" });
-        if (!state.parentOf.has(child.id)) {
-          state.parentOf.set(child.id, node.id);
+        if (claimedByUs) {
           node.children.push(child);
         }
       } else if (ref.kind === "child_database") {
+        const childId = extractPageId(ref.id);
+        let claimedByUs = false;
+        if (!state.parentOf.has(childId)) {
+          state.parentOf.set(childId, node.id);
+          claimedByUs = true;
+        }
         const dbNode = await crawl(client, ref.id, state, { kind: "db" });
-        if (!state.parentOf.has(dbNode.id)) {
-          state.parentOf.set(dbNode.id, node.id);
+        if (claimedByUs) {
           node.children.push(dbNode);
         }
         state.dbChildren.set(ref.blockId, dbNode.children.map((c) => ({ id: c.id, title: c.title })));
       } else if (ref.kind === "link_database") {
+        const childId = extractPageId(ref.id);
+        let claimedByUs = false;
+        if (!state.parentOf.has(childId)) {
+          state.parentOf.set(childId, node.id);
+          claimedByUs = true;
+        }
         const dbNode = await crawl(client, ref.id, state, { kind: "db" });
-        if (!state.parentOf.has(dbNode.id)) {
-          state.parentOf.set(dbNode.id, node.id);
+        if (claimedByUs) {
           node.children.push(dbNode);
         }
       }
